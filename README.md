@@ -1,2 +1,2 @@
 # FERD
-The official code for FRRD
+The official code for FERD: Fairness-Enhanced Data-Free Robustness Distillation
