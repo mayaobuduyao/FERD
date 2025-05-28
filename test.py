@@ -172,7 +172,7 @@ def train_model_ds(args, cln_generator, student_model, teacher_model, optimizer_
             t_cln_logits = teacher_model(x_cln).detach()
         s_cln_logits = student_model(x_cln.detach())
         
-        loss_dkl = L.dkl_loss(s_cln_logits, t_cln_logits)
+        loss_dkl = L.KT_loss_generator(s_cln_logits, t_cln_logits)
         loss = loss_dkl
 
         optimizer_s.zero_grad()
