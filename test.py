@@ -137,11 +137,9 @@ def train_model_ds_at(args, cln_generator, student_model, teacher_model, optimiz
         x_adv = generate_adv(student_model, x_cln, logits_t_cln, labels)
         logits_s_adv = student_model(x_adv.detach())
         
-        loss_dkl = L.dkl_loss(logits_s_cln, logits_t_cln, gamma=1, CLASS_PRIOR=labels, GI=True, T2=100.0)
-        loss_rob = L.dkl_loss(logits_s_adv, logits_t_cln, gamma=1, CLASS_PRIOR=labels, GI=True, T2=100.0)
-        #loss_ce = F.cross_entropy(logits_s_adv, labels)
+        loss_dkl = L.KT_loss_generator(logits_s_cln, logits_t_cln)
+        loss_rob = L.KT_loss_generator(logits_s_adv, logits_t_cln)
         loss_ce = 0
-        #loss_rob2 = L.dkl_loss(logits_s_adv, logits_s_cln, gamma=1, CLASS_PRIOR=labels, GI=True, T2=100.0)
         
         loss = 5.0/6*loss_dkl + 1.0/6*loss_rob
 
