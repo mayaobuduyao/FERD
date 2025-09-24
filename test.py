@@ -18,8 +18,6 @@ from hooks import DeepInversionHook
 from IBD_module_cmi import *  #CMI
 from query_sample import generate_adv
 from models.IFP import InformativeFeaturePackage
-from bat_loss.stop_to_lastclean import *
-from bat_loss.stop_to_firstadv import *
 from collections import OrderedDict
 
 warnings.filterwarnings("ignore")
@@ -67,6 +65,7 @@ parser.add_argument("--save_images", default="./gen_images", help="directory of 
 parser.add_argument("--print_freq", type=int, default=10, help="frequency of print information")
 parser.add_argument("--experiment_name", type=str, help="the name of experiment")
 parser.add_argument("--int_pop", type=int, default=3, help="get Intermediate feature")
+parser.add_argument("--target_en_ratio", type=float, default=0.9, help="target entropy ratio")
 
 args = parser.parse_args()
     
@@ -135,10 +134,11 @@ def train_model_ds_at(args, cln_generator, student_model, teacher_model, optimiz
         logits_s_cln = student_model(x_cln.detach())
         
         x_adv = generate_adv(student_model, x_cln, logits_t_cln, labels)
+        #x_adv = generate_adv_en(student_model, x_cln, logits_t_cln, target_entropy_ratio=args.target_en_ratio)
         logits_s_adv = student_model(x_adv.detach())
         
-        loss_dkl = L.KT_loss_generator(logits_s_cln, logits_t_cln)
-        loss_rob = L.KT_loss_generator(logits_s_adv, logits_t_cln)
+        loss_dkl = L.dkl_loss(logits_s_cln, logits_t_cln, gamma=1, CLASS_PRIOR=labels, GI=True, T2=100.0)
+        loss_rob = L.dkl_loss(logits_s_adv, logits_t_cln, gamma=1, CLASS_PRIOR=labels, GI=True, T2=100.0)
         loss_ce = 0
         
         loss = 5.0/6*loss_dkl + 1.0/6*loss_rob
@@ -151,38 +151,6 @@ def train_model_ds_at(args, cln_generator, student_model, teacher_model, optimiz
         
     return loss, loss_dkl, loss_rob, loss_ce
 
-### DataSet ###
-def train_model_ds(args, cln_generator, student_model, teacher_model, optimizer_s, epoch):
-
-    cln_generator.eval()
-    teacher_model.eval()
-    student_model.train()
-    
-    dataset = SyntheticDataset(root=save_mem_dir)
-    data_loader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=0, pin_memory=True)
-    data_iter = DataIter(data_loader)
-
-    # train the student model
-    for step in range(args.N_S):
-        x_cln, labels = data_iter.next()
-        x_cln, labels = x_cln.to(device), labels.to(device)
-        x_cln = std_aug(x_cln)
-        
-        with torch.no_grad(): 
-            t_cln_logits = teacher_model(x_cln).detach()
-        s_cln_logits = student_model(x_cln.detach())
-        
-        loss_dkl = L.KT_loss_generator(s_cln_logits, t_cln_logits)
-        loss = loss_dkl
-
-        optimizer_s.zero_grad()
-        loss.backward()
-        optimizer_s.step()
-        
-    plot_tsne_d(args, x_cln, teacher_model)
-
-    return loss, loss_dkl
-    
         
 def main():
     logger.info(args)
@@ -258,13 +226,19 @@ def main():
         scheduler_s.step()
         
         # Update labels_prob
+        
         min_val = labels_loss.min()
         max_val = labels_loss.max()
         labels_prob = (labels_loss - min_val) / (max_val - min_val + 1e-8)
         labels_prob = labels_prob * (class_max - class_min) + class_min
         labels_prob = labels_prob / labels_prob.sum()
-        print("labels_prob: ", labels_prob)
-        print("labels: ", labels)
+        
+        logger.info("Epoch %d", epoch)
+        logger.info("labels_loss:")
+        logger.info(labels_loss)
+        #labels_prob = torch.softmax(labels_loss / 1, dim=0)
+        logger.info("labels_prob:")
+        logger.info(labels_prob)
         
         if epoch % args.print_freq == 0:
             # Student Acc

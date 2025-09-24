@@ -23,6 +23,7 @@ from models.IFP import InformativeFeaturePackage
 from loader.loader import IFD_network_loader
 from networks import resnet, gan, deepinversion
 import losses as L
+from query_sample import *
 
 def unique_shape(s_shapes):
     n_s = []    # stores index for unique shapes
@@ -109,7 +110,7 @@ class Train_Gen_Module(nn.Module):
     def __init__(self, args, teacher, student, generator):
         super(Train_Gen_Module, self).__init__()
         self.args = args
-        self.teacher = teacher
+        self.teacher = teacher 
         self.student = student
         self.generator = generator
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -121,16 +122,15 @@ class Train_Gen_Module(nn.Module):
         
         if args.data == "CIFAR10":
             self.num_classes = 10
-            self.pop = 3
             self.img_size = (3, 32, 32)
         elif args.data == "CIFAR100":
             self.num_classes = 100
-            self.pop = 3
             self.img_size = (3, 32, 32)
         elif args.data == "tiny":
             self.num_classes = 200
-            self.pop = 4
             self.img_size = (3, 64, 64)
+            
+        self.pop = self.args.int_pop
         
         self.IFM_t = InformativeFeaturePackage(self.teacher, eps=0.03, attack_iter=10)
 
@@ -217,25 +217,7 @@ class Train_Gen_Module(nn.Module):
                 loss_oh*self.args.oh +
                 loss_uni*self.args.uni 
             )
-            """
-            # Contrastive Loss
-            global_feature = torch.cat([ h.instance_mean.to(self.device) for h in self.cmi_hooks ], dim=1)  # Feature of global view
-            _ = self.teacher(x_syn_local)
-            local_feature = torch.cat([ h.instance_mean.to(self.device) for h in self.cmi_hooks ], dim=1)  # Feature of local view
-            cached_feature, _ = self.mem_bank.get_data(self.n_neg)  # Get local and global features of past generated data
-            cached_local_feature, cached_global_feature = torch.chunk(cached_feature.to(self.device), chunks=2, dim=1)  # Split the features of the memory bank into local and gloal
-            proj_feature = self.head( torch.cat([local_feature, cached_local_feature, global_feature, cached_global_feature], dim=0) )  # The current local/global feature is combined with the cache local/global feature and sent to self.head to be projected into the representation space
-            proj_local_feature, proj_global_feature = torch.chunk(proj_feature, chunks=2, dim=0)  # Split into local and global
-            cr_logits = torch.mm(proj_local_feature, proj_global_feature.detach().T) / self.cr_T # (N + N') x (N + N')  # Measure similarity
-            cr_labels = torch.arange(start=0, end=len(cr_logits), device=self.device)
-            loss_cr = F.cross_entropy( cr_logits, cr_labels, reduction='none')  #(N + N') V
-            if self.mem_bank.n_updates>0:
-                loss_cr = loss_cr[:self.args.batch_size].mean() + loss_cr[self.args.batch_size:].mean()
-            else:
-                loss_cr = loss_cr.mean()
-                
-            total_loss += loss_cr
-            """
+            
             optimizer_G.zero_grad()
             self.optimizer_head.zero_grad()
             total_loss.backward()
@@ -246,17 +228,43 @@ class Train_Gen_Module(nn.Module):
                 if best_loss > total_loss.item() or best_mem is None:
                     best_loss = total_loss.item()
                     best_mem = x.data
-                    #best_features = torch.cat([local_feature.data, global_feature.data], dim=1).data
-                    
-        #self.mem_bank.add(best_features)
-                    
+            """ 
+            # t-SNE
+            if i%10 == 0:
+                plot_tsne_d(self.args, x_syn, self.teacher, i)
+            """     
         # update risk loss
-        kl_Loss1 = F.cross_entropy(t_logit_z.detach(), labels.detach(), reduction='none')
+        
+        x_adv = pgd_attack(self.teacher, x_syn, t_logit_z, labels)
+        t_logit_adv = self.teacher(x_adv)
+        correct_class_logits = t_logit_adv.gather(1, labels.unsqueeze(1)).squeeze()
+        temp_logits = t_logit_adv.clone()
+        temp_logits.scatter_(1, labels.unsqueeze(1), -float('inf'))
+        max_other_logits = temp_logits.max(dim=1).values
+        margin = correct_class_logits - max_other_logits
+        is_fooled = (margin < 99999)
+        neg_margin_fooled_only = -margin * is_fooled.float()
+        class_neg_margin_sum = torch.zeros(self.num_classes, device=t_logit_adv.device)
+        class_fooled_count = torch.zeros(self.num_classes, device=t_logit_adv.device)
+        class_neg_margin_sum.scatter_add_(0, labels, neg_margin_fooled_only)
+        class_fooled_count.scatter_add_(0, labels, is_fooled.float())
+        average_neg_margin_per_class = torch.where(
+            class_fooled_count > 0,
+            class_neg_margin_sum / class_fooled_count,
+            torch.tensor(0.0, device=t_logit_adv.device)
+        )
+        labels_loss = average_neg_margin_per_class
+        """
+        x_adv = pgd_attack(self.teacher, x_syn, t_logit_z, labels)
+        t_logit_adv = self.teacher(x_adv)
+        kl_Loss1 = F.cross_entropy(t_logit_adv.detach(), labels.detach(), reduction='none')
         for i in range(self.args.batch_size):
             label_idx = labels[i].item()
             labels_loss[label_idx] += kl_Loss1[i]
             labels_count[label_idx] += 1
         labels_loss = labels_loss / (labels_count + 1e-8)
+        """
+        
         
         return best_mem.detach(), labels.detach(), total_loss.item(), loss_bn.item(), loss_adv.item(), loss_oh.item(), loss_uni.item(), labels_loss
         
