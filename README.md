@@ -9,7 +9,7 @@ pip install -r requirements.txt
 
 ## Demo
 ```bash
-python test_kappa.py \
+python test.py \
     --teacher_model WRN_34_10 \
     --student_model ResNet18 \
     --data CIFAR10 \
